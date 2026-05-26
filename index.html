@@ -1,0 +1,781 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Multiplayer Card Game - Supabase Edition</title>
+
+    <!-- Supabase JS CDN Library -->
+    <script src="https://unpkg.com/@supabase/supabase-js@2"></script>
+
+    <style>
+        :root {
+            --bg-color: #1a252f;
+            --panel-color: #34495e;
+            --accent-color: #f1c40f;
+            --blue-btn: #3498db;
+            --green-btn: #2ecc71;
+            --red-btn: #e74c3c;
+        }
+
+        body {
+            margin: 0; padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background: var(--bg-color); color: white;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: manipulation;
+        }
+
+        /* Fullscreen Mobile Setup Overlay Overlay */
+        #setup-screen {
+            position: fixed; inset: 0;
+            background: var(--bg-color);
+            display: flex; flex-direction: column;
+            justify-content: center; align-items: center;
+            gap: 15px; padding: 20px; text-align: center; z-index: 100;
+        }
+
+        .btn {
+            padding: 14px 24px; border: none; border-radius: 8px;
+            cursor: pointer; font-weight: bold; font-size: 16px;
+            text-transform: uppercase; letter-spacing: 0.5px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.2);
+            transition: transform 0.1s ease, opacity 0.2s;
+        }
+        .btn:active { transform: scale(0.96); }
+        .btn-green { background: var(--green-btn); color: white; }
+        .btn-blue { background: var(--blue-btn); color: white; }
+        .btn-red { background: var(--red-btn); color: white; }
+        .btn-suit { background: white; color: black; font-size: 24px; padding: 15px 25px; margin: 8px; border-radius: 10px; }
+
+        #room-url-input {
+            width: 85%; max-width: 320px; padding: 12px;
+            border-radius: 6px; border: 2px solid var(--blue-btn);
+            background: #2c3e50; color: white; text-align: center;
+            font-size: 14px; margin-bottom: 10px;
+        }
+
+        #main-container {
+            display: flex; flex-direction: column;
+            padding: 10px; max-width: 600px; margin: 0 auto; box-sizing: border-box;
+        }
+
+        .panel {
+            background: var(--panel-color); padding: 12px;
+            border-radius: 12px; margin-bottom: 10px;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.15);
+        }
+
+        .score-board {
+            display: flex; justify-content: space-around; align-items: center;
+            font-size: 1.1rem; font-weight: bold; padding-bottom: 4px;
+        }
+
+        .trump-reveal-box {
+            background: var(--accent-color); color: black;
+            padding: 4px 14px; border-radius: 20px; font-size: 14px; font-weight: bold;
+        }
+
+        /* Table Mat Arenas optimized for thumb sizes */
+        #table {
+            display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin: 10px 0;
+        }
+        .table-slot-container {
+            background: rgba(0,0,0,0.15); padding: 10px; border-radius: 10px; text-align: center;
+        }
+        .table-slot-container h4 { margin: 0 0 8px 0; font-size: 14px; opacity: 0.9; }
+        .slot {
+            width: 75px; height: 110px; border: 2px dashed rgba(255,255,255,0.4);
+            margin: 0 auto; display: flex; justify-content: center;
+            align-items: center; border-radius: 10px; background: rgba(0,0,0,0.1);
+        }
+
+        /* Cards and Scroll Containers */
+        .hand-container {
+            display: flex; gap: 8px; justify-content: center;
+            flex-wrap: wrap; margin-top: 10px; min-height: 115px;
+        }
+
+        .card {
+            width: 75px; height: 110px; background: white; color: black;
+            border-radius: 10px; display: flex; flex-direction: column;
+            justify-content: space-between; padding: 10px box-sizing: border-box;
+            font-size: 22px; cursor: pointer; font-weight: bold;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.3); position: relative;
+            user-select: none; -webkit-user-select: none;
+        }
+        .card .card-top { align-self: flex-start; line-height: 1; }
+        .card .card-suit { align-self: center; font-size: 28px; line-height: 1; }
+        .card .card-bottom { align-self: flex-end; line-height: 1; transform: rotate(180deg); }
+        .card.disabled { opacity: 0.35; cursor: not-allowed; pointer-events: none; transform: scale(0.95); }
+        
+        .red { color: #e74c3c; }
+        .black { color: #2c3e50; }
+
+        /* Multi-step Verification Modals Containers */
+        .modal-step {
+            display: none; background: #2c3e50;
+            border: 2px solid var(--accent-color);
+            border-radius: 12px; padding: 15px; margin: 10px 0;
+            text-align: center; box-shadow: 0 6px 15px rgba(0,0,0,0.4);
+        }
+        .modal-step h3 { margin-top: 0; font-size: 18px; color: white; }
+        .modal-step p { font-size: 13px; color: #bdc3c7; margin: 5px 0 15px 0; }
+        .vote-status-indicator { font-size: 14px; margin: 10px 0; font-weight: bold; color: var(--accent-color); }
+
+        .active-turn { border: 2px solid var(--accent-color); background: rgba(241,196,15,0.04); }
+        .error-msg { color: var(--red-btn); font-size: 13px; margin-top: 8px; font-weight: bold; display: none; }
+
+        /* Mobile Compact Chat System */
+        #chat-messages {
+            height: 90px; overflow-y: auto; background: #2c3e50;
+            padding: 8px; border-radius: 8px; margin-top: 8px; font-size: 13px;
+        }
+        .msg { margin-bottom: 4px; line-height: 1.3; }
+        .chat-input-row { display: flex; gap: 8px; margin-top: 8px; }
+        #chat-input { flex: 1; padding: 12px; border-radius: 8px; border: none; font-size: 14px; }
+        
+        #status-text { color: var(--accent-color); font-weight: bold; text-align: center; margin: 0; font-size: 15px; }
+    </style>
+</head>
+
+<body>
+
+<!-- REGISTRATION SCREEN OVERLAY -->
+<div id="setup-screen">
+    <h1>Multiplayer Card Match</h1>
+    <p style="color:#bdc3c7; max-width:280px; margin:-5px 0 10px 0;">Create a game room or join via shared link to play live.</p>
+    <button id="btn-create-room" class="btn btn-green">Create Game Room</button>
+    <div id="share-link-box" style="display:none; width: 100%;">
+        <input type="text" id="room-url-input" readonly><br>
+        <button id="btn-copy-link" class="btn btn-blue">Copy Link & Send</button>
+    </div>
+</div>
+
+<div id="main-container">
+
+    <!-- MASTER INFORMATION HUB -->
+    <div class="panel">
+        <div class="score-board">
+            <div>P1 Points: <span id="score-p1">0</span></div>
+            <div id="trump-display" style="visibility: hidden;"><span class="trump-reveal-box">TRUMP: <span id="trump-suit-val">?</span></span></div>
+            <div>P2 Points: <span id="score-p2">0</span></div>
+        </div>
+        <hr style="border: 0; border-top: 1px solid rgba(255,255,255,0.1); margin: 8px 0;">
+        <p id="status-text">Connecting to Live Server Core...</p>
+    </div>
+
+    <!-- STEP 1: VOTE FOR TRUMP CHOOSER -->
+    <div id="step-trump-voter-select" class="modal-step">
+        <h3>Who will select the Trump Suit?</h3>
+        <p>Review your 4 cards down below and mutually vote on a selector.</p>
+        <div class="vote-status-indicator">
+            P1: <span id="v1-status">Waiting</span> | P2: <span id="v2-status">Waiting</span>
+        </div>
+        <button class="btn btn-blue" id="tv-p1" onclick="submitLocalVote('trumpChooser', 'P1')">Player 1</button>
+        <button class="btn btn-blue" id="tv-p2" onclick="submitLocalVote('trumpChooser', 'P2')">Player 2</button>
+        <p id="trump-vote-error" class="error-msg">Mismatched choices! Please cast matching votes...</p>
+    </div>
+
+    <!-- STEP 2: CHOOSE TRUMP SUIT -->
+    <div id="step-trump-select" class="modal-step">
+        <h3 id="suit-picker-title">Select Trump Suit</h3>
+        <p>Your selection will set the rules. Cards will finish dealing after selection.</p>
+        <button class="btn btn-suit" onclick="selectTrumpSuit('♠')">♠ Spades</button>
+        <button class="btn btn-suit" onclick="selectTrumpSuit('♣')">♣ Clubs</button>
+        <button class="btn btn-suit" onclick="selectTrumpSuit('♥')" style="color:#e74c3c;">♥ Hearts</button>
+        <button class="btn btn-suit" onclick="selectTrumpSuit('♦')" style="color:#e74c3c;">♦ Diamonds</button>
+    </div>
+
+    <!-- STEP 3: ONE-TIME CHANGE TRUMP LOOP PROMPT -->
+    <div id="step-change-trump" class="modal-step">
+        <h3>Do you want to CHANGE the Trump Suit?</h3>
+        <p>Review all 8 cards. Changing triggers exactly once IF both players agree.</p>
+        <div class="vote-status-indicator">
+            P1 Choice: <span id="c1-status">Waiting</span> | P2 Choice: <span id="c2-status">Waiting</span>
+        </div>
+        <button class="btn btn-green" id="tc-yes" onclick="submitLocalVote('changeTrump', 'YES')">YES, Change It</button>
+        <button class="btn btn-red" id="tc-no" onclick="submitLocalVote('changeTrump', 'NO')">NO, Keep Suit</button>
+    </div>
+
+    <!-- STEP 4: CHOOSE STARTER TURNS -->
+    <div id="step-start-verify" class="modal-step">
+        <h3>Who throws the 1st Card?</h3>
+        <p>Both players must click and agree on who starts the play mat.</p>
+        <div class="vote-status-indicator">
+            P1 Voted: <span id="s1-status">Waiting</span> | P2 Voted: <span id="s2-status">Waiting</span>
+        </div>
+        <button class="btn btn-blue" id="sv-p1" onclick="submitLocalVote('startPlayer', 'P1')">Player 1</button>
+        <button class="btn btn-blue" id="sv-p2" onclick="submitLocalVote('startPlayer', 'P2')">Player 2</button>
+        <p id="start-vote-error" class="error-msg">Mismatched starter choices! Re-evaluating votes...</p>
+    </div>
+
+    <!-- CENTRAL MAT PLAYGROUND SLOTS -->
+    <div id="table">
+        <div class="table-slot-container">
+            <h4>Opponent (Player <span id="label-opp-num">-</span>)</h4>
+            <div class="slot" id="opp-slot"></div>
+        </div>
+        <div class="table-slot-container">
+            <h4>You (Player <span id="label-my-num">-</span>)</h4>
+            <div class="slot" id="my-slot"></div>
+        </div>
+    </div>
+
+    <!-- HAND CONTROLLER PANEL -->
+    <div class="panel" id="hand-panel">
+        <h3 style="margin: 0 0 5px 0; font-size: 16px;">Your Hand Assets (<span id="card-count-val">0</span> cards)</h3>
+        <div id="my-hand" class="hand-container"></div>
+    </div>
+
+    <!-- LIVE CHAT BOX -->
+    <div class="panel">
+        <h3 style="margin: 0; font-size: 14px; opacity: 0.8;">Room Chat Communication</h3>
+        <div id="chat-messages"></div>
+        <div class="chat-input-row">
+            <input type="text" id="chat-input" placeholder="Type message..." autocomplete="off">
+            <button id="chat-send" class="btn btn-blue" style="padding:10px 16px; font-size:14px;">Send</button>
+        </div>
+    </div>
+
+</div>
+
+<script>
+/* =========================
+   SUPABASE CONNECTION CORNER
+========================= */
+const SUPABASE_URL = "https://pftbngrjxxkasossvhwm.supabase.co";
+const SUPABASE_KEY = "sb_publishable_EmdkxXEgX5XYcvPnKZjdMA_Ff8G9PdC";
+const client = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+/* =========================
+   GAME CONTROL STATE ENGINE
+========================= */
+const suits = ['♠','♣','♥','♦'];
+const values = ['7','8','9','10','J','Q','K','A'];
+const cardValueMap = { '7':7, '8':8, '9':9, '10':10, 'J':11, 'Q':12, 'K':13, 'A':14 };
+
+let roomID = new URLSearchParams(window.location.search).get('room');
+let myRole = ''; 
+let channel = null;
+
+let myHand = [];
+let fullDeckCache = [];
+let trumpSuit = null;
+let currentTurn = null;
+let leadPlayer = null;
+let scoreP1 = 0, scoreP2 = 0;
+let hasChangedTrump = false; // Flag tracking the one-time change limit rule
+
+let tableCards = { P1: null, P2: null };
+let votes = {
+    trumpChooser: { P1: null, P2: null },
+    changeTrump: { P1: null, P2: null },
+    startPlayer: { P1: null, P2: null }
+};
+
+/* =========================
+   INITIALIZATION LAYERS
+========================= */
+window.addEventListener('DOMContentLoaded', () => {
+    if (roomID) {
+        myRole = 'P2';
+        document.getElementById('btn-create-room').style.display = 'none';
+        initRealtimeEngine();
+    } else {
+        document.getElementById('btn-create-room').addEventListener('click', generateRoom);
+    }
+    document.getElementById('btn-copy-link').addEventListener('click', copyRoomLink);
+    document.getElementById('chat-send').addEventListener('click', sendChat);
+    
+    // Allow pressing enter to send chat messages natively
+    document.getElementById('chat-input').addEventListener('keypress', (e) => {
+        if(e.key === 'Enter') sendChat();
+    });
+});
+
+function generateRoom() {
+    roomID = Math.random().toString(36).substring(2, 9);
+    myRole = 'P1';
+    const link = window.location.origin + window.location.pathname + '?room=' + roomID;
+    document.getElementById('room-url-input').value = link;
+    document.getElementById('share-link-box').style.display = 'block';
+    initRealtimeEngine();
+}
+
+function copyRoomLink() {
+    const input = document.getElementById('room-url-input');
+    input.select();
+    input.setSelectionRange(0, 99999); // Mobile compatibility safety wrap
+    navigator.clipboard.writeText(input.value);
+    alert("Match Room join link copied to clipboard!");
+}
+
+/* =========================
+   SUPABASE REALTIME BROADCAST HUB
+========================= */
+function initRealtimeEngine() {
+    channel = client.channel(`room-${roomID}`);
+
+    channel
+    .on('broadcast', { event: 'join' }, () => {
+        if (myRole === 'P1') {
+            document.getElementById('setup-screen').style.display = 'none';
+            hostDealInitialPhase();
+        }
+    })
+    .on('broadcast', { event: 'deal-phase1' }, ({ payload }) => {
+        myHand = (myRole === 'P1') ? payload.p1Hand1 : payload.p2Hand1;
+        fullDeckCache = payload.remainingDeck;
+        document.getElementById('setup-screen').style.display = 'none';
+        localInitializeMatchState();
+    })
+    .on('broadcast', { event: 'deal-phase2' }, ({ payload }) => {
+        myHand = (myRole === 'P1') ? myHand.concat(payload.p1Hand2) : myHand.concat(payload.p2Hand2);
+        localResolveTrumpSelection(payload.suit);
+    })
+    .on('broadcast', { event: 'vote-sync' }, ({ payload }) => {
+        votes[payload.type][payload.player] = payload.choice;
+        updateUIIndicators(payload.type);
+        checkVoteConsensus(payload.type);
+    })
+    .on('broadcast', { event: 'play-card' }, ({ payload }) => {
+        localPlayCard(payload.player, payload.card);
+    })
+    .on('broadcast', { event: 'chat' }, ({ payload }) => {
+        addChat(payload.name, payload.msg);
+    })
+    .subscribe((status) => {
+        if (status === 'SUBSCRIBED') {
+            document.getElementById('status-text').innerText = "Connected! Waiting for opponent to join...";
+            document.getElementById('label-my-num').innerText = myRole === 'P1' ? '1' : '2';
+            document.getElementById('label-opp-num').innerText = myRole === 'P1' ? '2' : '1';
+            
+            if (myRole === 'P2') {
+                channel.send({ type: 'broadcast', event: 'join', payload: {} });
+            }
+        }
+    });
+}
+
+/* =========================
+   GAME ENGINE CARD FLOW RULES
+========================= */
+function hostDealInitialPhase() {
+    if (myRole !== 'P1') return;
+
+    let deck = [];
+    suits.forEach(s => {
+        values.forEach(v => {
+            deck.push({ value: v, suit: s, color: (s==='♥'||s==='♦') ? 'red' : 'black' });
+        });
+    });
+
+    for (let i = deck.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [deck[i], deck[j]] = [deck[j], deck[i]];
+    }
+
+    const p1Hand1 = deck.splice(0, 4);
+    const p2Hand1 = deck.splice(0, 4);
+
+    channel.send({
+        type: 'broadcast',
+        event: 'deal-phase1',
+        payload: { p1Hand1, p2Hand1, remainingDeck: deck }
+    });
+
+    myHand = p1Hand1;
+    fullDeckCache = deck;
+    localInitializeMatchState();
+}
+
+function localInitializeMatchState() {
+    scoreP1 = 0; scoreP2 = 0;
+    document.getElementById('score-p1').innerText = '0';
+    document.getElementById('score-p2').innerText = '0';
+    document.getElementById('trump-display').style.visibility = 'hidden';
+    document.getElementById('my-slot').innerHTML = '';
+    document.getElementById('opp-slot').innerHTML = '';
+    
+    tableCards = { P1: null, P2: null };
+    clearAllVotesData();
+
+    hideAllModals();
+    document.getElementById('step-trump-voter-select').style.display = 'block';
+    updateStatus("First 4 cards dealt. Agree on who selects Trump.");
+    renderHand();
+}
+
+function submitLocalVote(voteType, choice) {
+    votes[voteType][myRole] = choice;
+    updateUIIndicators(voteType);
+
+    channel.send({
+        type: 'broadcast',
+        event: 'vote-sync',
+        payload: { type: voteType, player: myRole, choice: choice }
+    });
+
+    checkVoteConsensus(voteType);
+}
+
+function checkVoteConsensus(type) {
+    let voteObj = votes[type];
+    if (voteObj.P1 && voteObj.P2) {
+        if (voteObj.P1 === voteObj.P2) {
+            resolveVoteAction(type, voteObj.P1);
+        } else {
+            // Check specific logic rule for mixed inputs during Change Trump vote segment
+            if (type === 'changeTrump') {
+                resolveVoteAction('changeTrump', 'MIXED_NO');
+                return;
+            }
+            
+            // Show alignment validation fail for other absolute votes
+            let errorId = (type === 'trumpChooser') ? 'trump-vote-error' : 'start-vote-error';
+            let errorDiv = document.getElementById(errorId);
+            if(errorDiv) errorDiv.style.display = 'block';
+            
+            setTimeout(() => {
+                voteObj.P1 = null; voteObj.P2 = null;
+                updateUIIndicators(type);
+                if(errorDiv) errorDiv.style.display = 'none';
+            }, 1400);
+        }
+    }
+}
+
+function resolveVoteAction(type, consensus) {
+    hideAllModals();
+
+    if (type === 'trumpChooser') {
+        if (myRole === consensus) {
+            document.getElementById('suit-picker-title').innerText = "Select Trump Suit:";
+            document.getElementById('step-trump-select').style.display = 'block';
+            updateStatus("You won the selector choice! Choose Game Trump Suit.");
+        } else {
+            updateStatus(`Player ${consensus === 'P1' ? '1' : '2'} is choosing the Trump suit...`);
+        }
+    } 
+    else if (type === 'changeTrump') {
+        if (consensus === 'YES') {
+            alert("Both players voted YES! Selector must choose a new Trump suit.");
+            // Reset the vote values before jumping back into the suit picker
+            votes.changeTrump = { P1: null, P2: null };
+            updateUIIndicators('changeTrump');
+            hasChangedTrump = true; // Use up the one-time change allowance
+
+            // Determine who was the original selector to re-display picker safely
+            let originalChooser = votes.trumpChooser.P1; 
+            if (myRole === originalChooser) {
+                document.getElementById('suit-picker-title').innerText = "Pick New Trump Suit:";
+                document.getElementById('step-trump-select').style.display = 'block';
+            } else {
+                updateStatus(`Player ${originalChooser === 'P1' ? '1' : '2'} is picking a new Trump...`);
+            }
+        } else {
+            // 'NO' consensus or 'MIXED_NO' falls through here to run play flow setup
+            if (consensus === 'MIXED_NO') {
+                alert("Mixed votes detected! Requires mutual YES to change. Keeping original Trump.");
+            } else {
+                alert("Both players voted NO. Keeping original Trump.");
+            }
+            goToStarterVotingScreen();
+        }
+    }
+    else if (type === 'startPlayer') {
+        currentTurn = consensus;
+        leadPlayer = currentTurn;
+        updateStatus(`Turn set! Player ${currentTurn === 'P1'?'1':'2'} plays first card.`);
+        renderHand();
+    }
+}
+
+function selectTrumpSuit(suit) {
+    // Only the host handles processing the random splits from the cache pool natively
+    if (myRole === 'P1') {
+        const p1Hand2 = fullDeckCache.splice(0, 4);
+        const p2Hand2 = fullDeckCache.splice(0, 4);
+        channel.send({
+            type: 'broadcast',
+            event: 'deal-phase2',
+            payload: { suit, p1Hand2, p2Hand2 }
+        });
+        myHand = myHand.concat(p1Hand2);
+        localResolveTrumpSelection(suit);
+    } else {
+        // Send choice to Host to process slicing arrays safely
+        channel.send({
+            type: 'broadcast',
+            event: 'vote-sync',
+            payload: { type: 'trumpChooser', player: myRole, choice: suit } 
+        });
+    }
+}
+
+// Intercept hook for P1 to capture P2's suit selection and execute the secondary deal block
+function handleHostSlicingOnP2Selection(suit) {
+    const p1Hand2 = fullDeckCache.splice(0, 4);
+    const p2Hand2 = fullDeckCache.splice(0, 4);
+    channel.send({
+        type: 'broadcast',
+        event: 'deal-phase2',
+        payload: { suit, p1Hand2, p2Hand2 }
+    });
+    myHand = myHand.concat(p1Hand2);
+    localResolveTrumpSelection(suit);
+}
+
+function localResolveTrumpSelection(suit) {
+    trumpSuit = suit;
+    document.getElementById('trump-suit-val').innerText = suit;
+    document.getElementById('trump-display').style.visibility = 'visible';
+    hideAllModals();
+
+    // Check if they've already used their one change. If true, jump past the vote screen
+    if (hasChangedTrump) {
+        updateStatus("New Trump locked into system! Voting for starter...");
+        goToStarterVotingScreen();
+    } else {
+        document.getElementById('step-change-trump').style.display = 'block';
+        updateStatus("Trump selected. Review your hands. Change it?");
+        renderHand();
+    }
+}
+
+function goToStarterVotingScreen() {
+    votes.startPlayer = { P1: null, P2: null };
+    updateUIIndicators('startPlayer');
+    document.getElementById('step-start-verify').style.display = 'block';
+    updateStatus("Vote on who throws the 1st card.");
+    renderHand();
+}
+
+function playCard(index) {
+    if (myRole !== currentTurn) return;
+    if (tableCards[myRole]) return;
+
+    const card = myHand[index];
+
+    // Follow strategy rule verification check
+    if (myRole !== leadPlayer && tableCards[leadPlayer]) {
+        const ledSuit = tableCards[leadPlayer].suit;
+        const hasLedSuit = myHand.some(c => c.suit === ledSuit);
+        if (hasLedSuit && card.suit !== ledSuit) {
+            alert(`Rule Violation! You have a ${ledSuit} card in your hand. You must follow suit.`);
+            return;
+        }
+    }
+
+    // Splice target only after passing rule validations safely
+    myHand.splice(index, 1);
+    localPlayCard(myRole, card);
+
+    channel.send({
+        type: 'broadcast',
+        event: 'play-card',
+        payload: { player: myRole, card: card }
+    });
+}
+
+function localPlayCard(player, card) {
+    tableCards[player] = card;
+    
+    // Set lead player if this was the opening card of the trick
+    const oppRole = (myRole === 'P1') ? 'P2' : 'P1';
+    if (!tableCards[oppRole]) {
+        leadPlayer = player;
+    }
+
+    renderTable();
+
+    if (tableCards.P1 && tableCards.P2) {
+        currentTurn = null;
+        renderHand();
+        updateStatus("Evaluating trick outcome...");
+        setTimeout(evaluateTrickWinnerLocally, 1400);
+    } else {
+        currentTurn = (player === 'P1') ? 'P2' : 'P1';
+        renderHand();
+        updateStatus(currentTurn === myRole ? "Your turn to play a card." : "Waiting for opponent to play...");
+    }
+}
+
+function evaluateTrickWinnerLocally() {
+    const c1 = tableCards.P1; 
+    const c2 = tableCards.P2;
+    const ledSuit = tableCards[leadPlayer].suit;
+    let trickWinner = 'P1';
+
+    if (c1.suit === c2.suit) {
+        trickWinner = cardValueMap[c1.value] > cardValueMap[c2.value] ? 'P1' : 'P2';
+    }
+    else if (c1.suit !== ledSuit && c1.suit === trumpSuit) {
+        trickWinner = 'P1';
+    }
+    else if (c2.suit !== ledSuit && c2.suit === trumpSuit) {
+        trickWinner = 'P2';
+    }
+    else {
+        trickWinner = leadPlayer;
+    }
+
+    // Increment points score models
+    if (trickWinner === 'P1') scoreP1++; else scoreP2++;
+    document.getElementById('score-p1').innerText = scoreP1;
+    document.getElementById('score-p2').innerText = scoreP2;
+
+    // Clear board table positions
+    document.getElementById('my-slot').innerHTML = '';
+    document.getElementById('opp-slot').innerHTML = '';
+    tableCards = { P1: null, P2: null };
+
+    leadPlayer = trickWinner;
+    currentTurn = trickWinner;
+
+    if (myHand.length === 0) {
+        currentTurn = null;
+        renderHand();
+        
+        let finalText = "";
+        if (scoreP1 === scoreP2) finalText = "🤝 GAME OVER! It's a Tie Match!";
+        else if (scoreP1 > scoreP2) finalText = "🎉 GAME OVER! Player 1 Wins!";
+        else finalText = "🎉 GAME OVER! Player 2 Wins!";
+        
+        updateStatus(finalText);
+        alert(finalText);
+    } else {
+        updateStatus(currentTurn === myRole ? "You won the trick! Lead the next card." : "Opponent won the trick. Waiting for their lead...");
+        renderHand();
+    }
+}
+
+/* =========================
+   UI LAYOUT RENDERING CORE
+========================= */
+function renderHand() {
+    const container = document.getElementById('my-hand');
+    container.innerHTML = '';
+
+    myHand.forEach((card, index) => {
+        const div = document.createElement('div');
+        div.className = `card ${card.color}`;
+        if (myRole !== currentTurn) div.classList.add('disabled');
+        
+        div.innerHTML = `
+            <div class="card-top">${card.value}</div>
+            <div class="card-suit">${card.suit}</div>
+            <div class="card-bottom">${card.value}</div>
+        `;
+        div.onclick = () => playCard(index);
+        container.appendChild(div);
+    });
+
+    document.getElementById('card-count-val').innerText = myHand.length;
+    document.getElementById('hand-panel').classList.toggle('active-turn', myRole === currentTurn);
+}
+
+function renderTable() {
+    document.getElementById('my-slot').innerHTML = '';
+    document.getElementById('opp-slot').innerHTML = '';
+
+    if (tableCards[myRole]) {
+        const card = tableCards[myRole];
+        const div = document.createElement('div');
+        div.className = `card ${card.color}`;
+        div.innerHTML = `<div class="card-top">${card.value}</div><div class="card-suit">${card.suit}</div><div class="card-bottom">${card.value}</div>`;
+        document.getElementById('my-slot').appendChild(div);
+    }
+
+    const oppRole = (myRole === 'P1') ? 'P2' : 'P1';
+    if (tableCards[oppRole]) {
+        const card = tableCards[oppRole];
+        const div = document.createElement('div');
+        div.className = `card ${card.color}`;
+        div.innerHTML = `<div class="card-top">${card.value}</div><div class="card-suit">${card.suit}</div><div class="card-bottom">${card.value}</div>`;
+        document.getElementById('opp-slot').appendChild(div);
+    }
+}
+
+function updateUIIndicators(type) {
+    let state = votes[type];
+    
+    if (type === 'trumpChooser') {
+        document.getElementById('v1-status').innerText = state.P1 ? `Player ${state.P1==='P1'?'1':'2'}` : "Waiting";
+        document.getElementById('v2-status').innerText = state.P2 ? `Player ${state.P2==='P1'?'1':'2'}` : "Waiting";
+        
+        // Host interception rule filter helper
+        if (myRole === 'P1' && state.P2 && suits.includes(state.P2)) {
+            handleHostSlicingOnP2Selection(state.P2);
+            state.P2 = null; 
+        }
+        
+        document.getElementById('tv-p1').style.background = (state[myRole] === 'P1') ? 'var(--green-btn)' : 'var(--blue-btn)';
+        document.getElementById('tv-p2').style.background = (state[myRole] === 'P2') ? 'var(--green-btn)' : 'var(--blue-btn)';
+    } 
+    else if (type === 'changeTrump') {
+        document.getElementById('c1-status').innerText = state.P1 ? state.P1 : "Waiting";
+        document.getElementById('c2-status').innerText = state.P2 ? state.P2 : "Waiting";
+        
+        document.getElementById('tc-yes').style.background = (state[myRole] === 'YES') ? 'var(--green-btn)' : '';
+        document.getElementById('tc-no').style.background = (state[myRole] === 'NO') ? 'var(--red-btn)' : '';
+    }
+    else if (type === 'startPlayer') {
+        document.getElementById('s1-status').innerText = state.P1 ? `Player ${state.P1==='P1'?'1':'2'}` : "Waiting";
+        document.getElementById('s2-status').innerText = state.P2 ? `Player ${state.P2==='P1'?'1':'2'}` : "Waiting";
+        
+        document.getElementById('sv-p1').style.background = (state[myRole] === 'P1') ? 'var(--green-btn)' : 'var(--blue-btn)';
+        document.getElementById('sv-p2').style.background = (state[myRole] === 'P2') ? 'var(--green-btn)' : 'var(--blue-btn)';
+    }
+}
+
+function hideAllModals() {
+    document.querySelectorAll('.modal-step').forEach(m => m.style.display = 'none');
+}
+
+function clearAllVotesData() {
+    votes = { 
+        trumpChooser: {P1:null, P2:null}, 
+        changeTrump: {P1:null, P2:null}, 
+        startPlayer: {P1:null, P2:null} 
+    };
+    updateUIIndicators('trumpChooser');
+    updateUIIndicators('changeTrump');
+    updateUIIndicators('startPlayer');
+}
+
+function updateStatus(text) {
+    document.getElementById('status-text').innerText = text;
+}
+
+/* =========================
+   COMPACT SYSTEM LIVE CHAT
+========================= */
+function sendChat() {
+    const input = document.getElementById('chat-input');
+    const msg = input.value.trim();
+    if (!msg) return;
+
+    addChat('You', msg);
+
+    channel.send({
+        type: 'broadcast',
+        event: 'chat',
+        payload: { name: `Player ${myRole==='P1'?'1':'2'}`, msg: msg }
+    });
+    input.value = '';
+}
+
+function addChat(name, msg) {
+    const div = document.createElement('div');
+    div.className = 'msg';
+    div.innerHTML = `<b>${name}:</b> ${msg}`;
+    const box = document.getElementById('chat-messages');
+    box.appendChild(div);
+    box.scrollTop = box.scrollHeight;
+}
+</script>
+
+</body>
+</html>
