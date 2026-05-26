@@ -3,10 +3,13 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Multiplayer Card Game - Supabase Edition</title>
+    <title>Multiplayer Card Game - Supabase Voice Edition</title>
 
     <!-- Supabase JS CDN Library -->
     <script src="https://unpkg.com/@supabase/supabase-js@2"></script>
+    
+    <!-- PeerJS CDN for WebRTC Live Voice Streams -->
+    <script src="https://unpkg.com/peerjs@1.4.7/dist/peerjs.min.js"></script>
 
     <style>
         :root {
@@ -16,6 +19,7 @@
             --blue-btn: #3498db;
             --green-btn: #2ecc71;
             --red-btn: #e74c3c;
+            --purple-btn: #9b59b6;
         }
 
         body {
@@ -26,7 +30,7 @@
             touch-action: manipulation;
         }
 
-        /* Fullscreen Mobile Setup Overlay Overlay */
+        /* Fullscreen Mobile Setup Overlay */
         #setup-screen {
             position: fixed; inset: 0;
             background: var(--bg-color);
@@ -46,6 +50,7 @@
         .btn-green { background: var(--green-btn); color: white; }
         .btn-blue { background: var(--blue-btn); color: white; }
         .btn-red { background: var(--red-btn); color: white; }
+        .btn-purple { background: var(--purple-btn); color: white; }
         .btn-suit { background: white; color: black; font-size: 24px; padding: 15px 25px; margin: 8px; border-radius: 10px; }
 
         #room-url-input {
@@ -76,6 +81,14 @@
             padding: 4px 14px; border-radius: 20px; font-size: 14px; font-weight: bold;
         }
 
+        /* Voice Status Banner Component */
+        .voice-control-bar {
+            display: flex; justify-content: space-between; align-items: center;
+            background: #2c3e50; border-radius: 8px; padding: 8px 12px; margin-bottom: 10px;
+        }
+        .voice-dot { width: 10px; height: 10px; background: #95a5a6; border-radius: 50%; display: inline-block; margin-right: 6px; }
+        .voice-dot.connected { background: var(--green-btn); box-shadow: 0 0 8px var(--green-btn); }
+
         /* Table Mat Arenas optimized for thumb sizes */
         #table {
             display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin: 10px 0;
@@ -99,7 +112,7 @@
         .card {
             width: 75px; height: 110px; background: white; color: black;
             border-radius: 10px; display: flex; flex-direction: column;
-            justify-content: space-between; padding: 10px box-sizing: border-box;
+            justify-content: space-between; padding: 10px; box-sizing: border-box;
             font-size: 22px; cursor: pointer; font-weight: bold;
             box-shadow: 0 4px 8px rgba(0,0,0,0.3); position: relative;
             user-select: none; -webkit-user-select: none;
@@ -153,6 +166,15 @@
 </div>
 
 <div id="main-container">
+
+    <!-- VOIP HARDWARE CONTROLLER PANEL -->
+    <div class="voice-control-bar">
+        <div style="display:flex; align-items:center; font-size:14px;">
+            <span id="voice-status-dot" class="voice-dot"></span>
+            <span id="voice-status-lbl">Voice: Disabled</span>
+        </div>
+        <button id="btn-toggle-voice" class="btn btn-purple" style="padding: 6px 14px; font-size: 12px;" onclick="initializeVoiceCall()">Connect Call</button>
+    </div>
 
     <!-- MASTER INFORMATION HUB -->
     <div class="panel">
@@ -265,7 +287,8 @@ let trumpSuit = null;
 let currentTurn = null;
 let leadPlayer = null;
 let scoreP1 = 0, scoreP2 = 0;
-let hasChangedTrump = false; // Flag tracking the one-time change limit rule
+let hasChangedTrump = false;
+let firstCardThrownGlobal = false;
 
 let tableCards = { P1: null, P2: null };
 let votes = {
@@ -273,6 +296,90 @@ let votes = {
     changeTrump: { P1: null, P2: null },
     startPlayer: { P1: null, P2: null }
 };
+
+/* =========================
+   LIVE VOICE CHANNEL OVERLAY (WebRTC)
+========================= */
+let peer = null;
+let myStream = null;
+let currentCall = null;
+
+async function initializeVoiceCall() {
+    if (myStream) return; // Prevent double taps
+
+    document.getElementById('btn-toggle-voice').innerText = "Requesting Mic...";
+    document.getElementById('voice-status-lbl').innerText = "Allow Mic access...";
+
+    try {
+        // 1. Prompt browser hardware device access
+        myStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+        document.getElementById('voice-status-lbl').innerText = "Connecting Call Node...";
+        
+        // 2. Setup standard public cloud signaling router node
+        // We use a clean room ID variant string format to prevent collision with game text room ids
+        const uniquePeerID = `${roomID}-${myRole}`.toLowerCase();
+        peer = new Peer(uniquePeerID);
+
+        peer.on('open', (id) => {
+            document.getElementById('voice-status-lbl').innerText = "Awaiting Peer Connection...";
+            document.getElementById('voice-status-dot').className = "voice-dot connected";
+            document.getElementById('btn-toggle-voice').style.display = 'none';
+            
+            // Notify other player that our voice channel listener is ready
+            channel.send({
+                type: 'broadcast',
+                event: 'voice-ready-handshake',
+                payload: { senderRole: myRole }
+            });
+            
+            // If I am P2 and just came online, check if P1 is around to call them directly
+            if (myRole === 'P2') {
+                dialOpponentVoiceNode('P1');
+            }
+        });
+
+        // 3. Setup incoming audio link handshake capture
+        peer.on('call', (incomingCall) => {
+            currentCall = incomingCall;
+            incomingCall.answer(myStream); // Return our mic audio feed back to sender
+            incomingCall.on('stream', (opponentStream) => {
+                playRemoteAudioStream(opponentStream);
+            });
+        });
+
+    } catch (err) {
+        console.error("Audio error:", err);
+        alert("Voice Connection Failed! Ensure you are using HTTPS and have granted microphone permissions.");
+        document.getElementById('btn-toggle-voice').innerText = "Retry Call";
+        document.getElementById('voice-status-lbl').innerText = "Mic Blocked/Failed";
+    }
+}
+
+function dialOpponentVoiceNode(targetRole) {
+    if (!peer || !myStream) return;
+    const targetPeerID = `${roomID}-${targetRole}`.toLowerCase();
+    
+    // Dial directly to target device node
+    const call = peer.call(targetPeerID, myStream);
+    currentCall = call;
+    
+    call.on('stream', (opponentStream) => {
+        playRemoteAudioStream(opponentStream);
+    });
+}
+
+function playRemoteAudioStream(stream) {
+    // Generate native silent audio element nodes to output hardware phone calls
+    let audio = document.getElementById("remote-voice-receiver");
+    if (!audio) {
+        audio = document.createElement("audio");
+        audio.id = "remote-voice-receiver";
+        audio.autoplay = true;
+        document.body.appendChild(audio);
+    }
+    audio.srcObject = stream;
+    document.getElementById('voice-status-lbl').innerText = "Call Connected Live";
+}
 
 /* =========================
    INITIALIZATION LAYERS
@@ -288,7 +395,6 @@ window.addEventListener('DOMContentLoaded', () => {
     document.getElementById('btn-copy-link').addEventListener('click', copyRoomLink);
     document.getElementById('chat-send').addEventListener('click', sendChat);
     
-    // Allow pressing enter to send chat messages natively
     document.getElementById('chat-input').addEventListener('keypress', (e) => {
         if(e.key === 'Enter') sendChat();
     });
@@ -306,7 +412,7 @@ function generateRoom() {
 function copyRoomLink() {
     const input = document.getElementById('room-url-input');
     input.select();
-    input.setSelectionRange(0, 99999); // Mobile compatibility safety wrap
+    input.setSelectionRange(0, 99999); 
     navigator.clipboard.writeText(input.value);
     alert("Match Room join link copied to clipboard!");
 }
@@ -322,6 +428,12 @@ function initRealtimeEngine() {
         if (myRole === 'P1') {
             document.getElementById('setup-screen').style.display = 'none';
             hostDealInitialPhase();
+        }
+    })
+    .on('broadcast', { event: 'voice-ready-handshake' }, ({ payload }) => {
+        // If opponent says they are ready and I am already armed, initiate call routing
+        if (payload.senderRole !== myRole && myStream) {
+            dialOpponentVoiceNode(payload.senderRole);
         }
     })
     .on('broadcast', { event: 'deal-phase1' }, ({ payload }) => {
@@ -392,9 +504,10 @@ function hostDealInitialPhase() {
 
 function localInitializeMatchState() {
     scoreP1 = 0; scoreP2 = 0;
+    firstCardThrownGlobal = false;
     document.getElementById('score-p1').innerText = '0';
     document.getElementById('score-p2').innerText = '0';
-    document.getElementById('trump-display').style.visibility = 'hidden';
+    document.getElementById('trump-display').style.visibility = 'hidden'; 
     document.getElementById('my-slot').innerHTML = '';
     document.getElementById('opp-slot').innerHTML = '';
     
@@ -426,13 +539,11 @@ function checkVoteConsensus(type) {
         if (voteObj.P1 === voteObj.P2) {
             resolveVoteAction(type, voteObj.P1);
         } else {
-            // Check specific logic rule for mixed inputs during Change Trump vote segment
             if (type === 'changeTrump') {
                 resolveVoteAction('changeTrump', 'MIXED_NO');
                 return;
             }
             
-            // Show alignment validation fail for other absolute votes
             let errorId = (type === 'trumpChooser') ? 'trump-vote-error' : 'start-vote-error';
             let errorDiv = document.getElementById(errorId);
             if(errorDiv) errorDiv.style.display = 'block';
@@ -461,12 +572,10 @@ function resolveVoteAction(type, consensus) {
     else if (type === 'changeTrump') {
         if (consensus === 'YES') {
             alert("Both players voted YES! Selector must choose a new Trump suit.");
-            // Reset the vote values before jumping back into the suit picker
             votes.changeTrump = { P1: null, P2: null };
             updateUIIndicators('changeTrump');
-            hasChangedTrump = true; // Use up the one-time change allowance
+            hasChangedTrump = true;
 
-            // Determine who was the original selector to re-display picker safely
             let originalChooser = votes.trumpChooser.P1; 
             if (myRole === originalChooser) {
                 document.getElementById('suit-picker-title').innerText = "Pick New Trump Suit:";
@@ -475,7 +584,6 @@ function resolveVoteAction(type, consensus) {
                 updateStatus(`Player ${originalChooser === 'P1' ? '1' : '2'} is picking a new Trump...`);
             }
         } else {
-            // 'NO' consensus or 'MIXED_NO' falls through here to run play flow setup
             if (consensus === 'MIXED_NO') {
                 alert("Mixed votes detected! Requires mutual YES to change. Keeping original Trump.");
             } else {
@@ -487,13 +595,12 @@ function resolveVoteAction(type, consensus) {
     else if (type === 'startPlayer') {
         currentTurn = consensus;
         leadPlayer = currentTurn;
-        updateStatus(`Turn set! Player ${currentTurn === 'P1'?'1':'2'} plays first card.`);
+        updateStatus("Ready! Play your card when it is your turn.");
         renderHand();
     }
 }
 
 function selectTrumpSuit(suit) {
-    // Only the host handles processing the random splits from the cache pool natively
     if (myRole === 'P1') {
         const p1Hand2 = fullDeckCache.splice(0, 4);
         const p2Hand2 = fullDeckCache.splice(0, 4);
@@ -505,7 +612,6 @@ function selectTrumpSuit(suit) {
         myHand = myHand.concat(p1Hand2);
         localResolveTrumpSelection(suit);
     } else {
-        // Send choice to Host to process slicing arrays safely
         channel.send({
             type: 'broadcast',
             event: 'vote-sync',
@@ -514,7 +620,6 @@ function selectTrumpSuit(suit) {
     }
 }
 
-// Intercept hook for P1 to capture P2's suit selection and execute the secondary deal block
 function handleHostSlicingOnP2Selection(suit) {
     const p1Hand2 = fullDeckCache.splice(0, 4);
     const p2Hand2 = fullDeckCache.splice(0, 4);
@@ -530,10 +635,9 @@ function handleHostSlicingOnP2Selection(suit) {
 function localResolveTrumpSelection(suit) {
     trumpSuit = suit;
     document.getElementById('trump-suit-val').innerText = suit;
-    document.getElementById('trump-display').style.visibility = 'visible';
+    document.getElementById('trump-display').style.visibility = 'hidden'; // Keep hidden at choosing stage
     hideAllModals();
 
-    // Check if they've already used their one change. If true, jump past the vote screen
     if (hasChangedTrump) {
         updateStatus("New Trump locked into system! Voting for starter...");
         goToStarterVotingScreen();
@@ -558,7 +662,6 @@ function playCard(index) {
 
     const card = myHand[index];
 
-    // Follow strategy rule verification check
     if (myRole !== leadPlayer && tableCards[leadPlayer]) {
         const ledSuit = tableCards[leadPlayer].suit;
         const hasLedSuit = myHand.some(c => c.suit === ledSuit);
@@ -568,7 +671,6 @@ function playCard(index) {
         }
     }
 
-    // Splice target only after passing rule validations safely
     myHand.splice(index, 1);
     localPlayCard(myRole, card);
 
@@ -582,7 +684,12 @@ function playCard(index) {
 function localPlayCard(player, card) {
     tableCards[player] = card;
     
-    // Set lead player if this was the opening card of the trick
+    // REVEAL HOOK: Reveal Trump card layout precisely as soon as the first card hits the mat
+    if (!firstCardThrownGlobal) {
+        firstCardThrownGlobal = true;
+        document.getElementById('trump-display').style.visibility = 'visible';
+    }
+
     const oppRole = (myRole === 'P1') ? 'P2' : 'P1';
     if (!tableCards[oppRole]) {
         leadPlayer = player;
@@ -621,12 +728,10 @@ function evaluateTrickWinnerLocally() {
         trickWinner = leadPlayer;
     }
 
-    // Increment points score models
     if (trickWinner === 'P1') scoreP1++; else scoreP2++;
     document.getElementById('score-p1').innerText = scoreP1;
     document.getElementById('score-p2').innerText = scoreP2;
 
-    // Clear board table positions
     document.getElementById('my-slot').innerHTML = '';
     document.getElementById('opp-slot').innerHTML = '';
     tableCards = { P1: null, P2: null };
@@ -705,7 +810,6 @@ function updateUIIndicators(type) {
         document.getElementById('v1-status').innerText = state.P1 ? `Player ${state.P1==='P1'?'1':'2'}` : "Waiting";
         document.getElementById('v2-status').innerText = state.P2 ? `Player ${state.P2==='P1'?'1':'2'}` : "Waiting";
         
-        // Host interception rule filter helper
         if (myRole === 'P1' && state.P2 && suits.includes(state.P2)) {
             handleHostSlicingOnP2Selection(state.P2);
             state.P2 = null; 
